@@ -1,6 +1,5 @@
-from sys import version_info, getfilesystemencoding
 import os
-from enum import Enum, IntEnum
+from enum import IntEnum
 from collections import namedtuple
 from struct import unpack_from, calcsize
 from select import poll
@@ -12,13 +11,7 @@ from termios import FIONREAD
 from fcntl import ioctl
 from io import FileIO
 
-PY2 = version_info.major < 3
-if PY2:
-    fsencode = lambda s: s if isinstance(s, str) else s.encode(getfilesystemencoding())
-    # In 32-bit Python < 3 the inotify constants don't fit in an IntEnum:
-    IntEnum = type('IntEnum', (long, Enum), {})
-else:
-    from os import fsencode, fsdecode
+from os import fsencode, fsdecode
 
 
 __version__ = '1.3.5'
@@ -85,10 +78,14 @@ class INotify(FileIO):
             libc_so = find_library('c')
         except RuntimeError: # Python on Synology NASs raises a RuntimeError
             libc_so = None
-        global _libc; _libc = _libc or CDLL(libc_so or 'libc.so.6', use_errno=True)
-        O_CLOEXEC = getattr(os, 'O_CLOEXEC', 0) # Only defined in Python 3.3+
-        flags = (not inheritable) * O_CLOEXEC | bool(nonblocking) * os.O_NONBLOCK 
-        FileIO.__init__(self, _libc_call(_libc.inotify_init1, flags), mode='rb')
+        global _libc
+        _libc = _libc or CDLL(libc_so or 'libc.so.6', use_errno=True)
+        flags = 0
+        if not inheritable:
+            flags |= os.O_CLOEXEC
+        if nonblocking:
+            flags |= os.O_NONBLOCK
+        super().__init__(file=_libc_call(_libc.inotify_init1, flags), mode="rb")
         self._poller = poll()
         self._poller.register(self.fileno())
 
@@ -160,14 +157,14 @@ class INotify(FileIO):
 
 
 def parse_events(data):
-    """Unpack data read from an inotify file descriptor into 
+    """Unpack data read from an inotify file descriptor into
     :attr:`~inotify_simple.Event` namedtuples (wd, mask, cookie, name). This function
     can be used if the application has read raw data from the inotify file
     descriptor rather than calling :func:`~inotify_simple.INotify.read`.
 
     Args:
         data (bytes): A bytestring as read from an inotify file descriptor.
-        
+
     Returns:
         list: list of :attr:`~inotify_simple.Event` namedtuples"""
     pos = 0
@@ -176,7 +173,7 @@ def parse_events(data):
         wd, mask, cookie, namesize = unpack_from(_EVENT_FMT, data, pos)
         pos += _EVENT_SIZE + namesize
         name = data[pos - namesize : pos].split(b'\x00', 1)[0]
-        events.append(Event(wd, mask, cookie, name if PY2 else fsdecode(name)))
+        events.append(Event(wd, mask, cookie, fsdecode(name)))
     return events
 
 
@@ -224,5 +221,5 @@ class masks(IntEnum):
     #: bitwise-OR of all the events that can be passed to
     #: :func:`~inotify_simple.INotify.add_watch`
     ALL_EVENTS  = (flags.ACCESS | flags.MODIFY | flags.ATTRIB | flags.CLOSE_WRITE |
-        flags.CLOSE_NOWRITE | flags.OPEN | flags.MOVED_FROM | flags.MOVED_TO | 
+        flags.CLOSE_NOWRITE | flags.OPEN | flags.MOVED_FROM | flags.MOVED_TO |
         flags.CREATE | flags.DELETE| flags.DELETE_SELF | flags.MOVE_SELF)
